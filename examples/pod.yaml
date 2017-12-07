@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox
+  namespace: default
+spec:
+  schedulerName: resource-scheduler
+  containers:
+  - image: busybox
+    command:
+      - sh
+      - "-c"
+      - "devs=$(ls /dev/ | egrep '^nvidia-[0-9]+$') && echo stub devices: $devs | sleep 1d"
+    imagePullPolicy: IfNotPresent
+    name: busybox
+  restartPolicy: Always
+  nodeSelector:
+    intel-cpu-e3: "true"

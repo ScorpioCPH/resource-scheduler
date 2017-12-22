@@ -100,22 +100,35 @@ func NewScheduler(
 	// processing. This way, we don't need to implement custom logic for
 	// handling Pod resources. More info on this pattern:
 	// https://github.com/kubernetes/community/blob/8cafef897a22026d42f5e5bb3f104febe7e29830/contributors/devel/schedulers.md
-	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: scheduler.handleObject,
-		UpdateFunc: func(old, new interface{}) {
-			glog.Infof("Update Pod")
-			newPod := new.(*corev1.Pod)
-			oldPod := old.(*corev1.Pod)
-			if newPod.ResourceVersion == oldPod.ResourceVersion {
-				glog.Infof("ResourceVersion not changed: %s", newPod.ResourceVersion)
-				// Periodic resync will send update events for all known Pods.
-				// Two different versions of the same Pod will always have different RVs.
-				return
-			}
-			scheduler.handleObject(new)
+	podInformer.Informer().AddEventHandler(
+		cache.FilteringResourceEventHandler{
+			FilterFunc: func(obj interface{}) bool {
+				switch t := obj.(type) {
+				case *corev1.Pod:
+					return unassignedNonTerminatedPod(t)
+				default:
+					runtime.HandleError(fmt.Errorf("unable to handle object %T", obj))
+					return false
+				}
+			},
+			Handler: cache.ResourceEventHandlerFuncs{
+				AddFunc: scheduler.handleObject,
+				UpdateFunc: func(old, new interface{}) {
+					glog.Infof("Update Pod")
+					newPod := new.(*corev1.Pod)
+					oldPod := old.(*corev1.Pod)
+					if newPod.ResourceVersion == oldPod.ResourceVersion {
+						glog.Infof("ResourceVersion not changed: %s", newPod.ResourceVersion)
+						// Periodic resync will send update events for all known Pods.
+						// Two different versions of the same Pod will always have different RVs.
+						return
+					}
+					scheduler.handleObject(new)
+				},
+				DeleteFunc: scheduler.handleObject,
+			},
 		},
-		DeleteFunc: scheduler.handleObject,
-	})
+	)
 
 	return scheduler
 }
@@ -328,12 +341,17 @@ func (s *Scheduler) handleObject(obj interface{}) {
 		return
 	}
 
-	// TODO(cph): find a proper way to check whether this Pod is scheduled.
-	if pod.Status.Phase != corev1.PodPending {
-		glog.V(4).Infof("this Pod '%s' is scheduled, ignoring", object.GetName())
-		return
-	}
-
 	s.enqueuePod(pod)
 	return
+}
+
+// unassignedNonTerminatedPod selects pods that are unassigned and non-terminal.
+func unassignedNonTerminatedPod(pod *corev1.Pod) bool {
+	if len(pod.Spec.NodeName) != 0 {
+		return false
+	}
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return false
+	}
+	return true
 }
